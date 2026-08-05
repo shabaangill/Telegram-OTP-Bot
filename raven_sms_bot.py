@@ -51,11 +51,11 @@ IVASMS_DASHBOARD = {
 }
 
 # ✘ 𝙍𝘼𝙑𝙀𝙉 | إعدادات عامة
-USERNAME = "YOUR_USERNAME_HERE"
-PASSWORD = "YOUR_SITE_PASSWORD_HERE"
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+USERNAME = "shabaangill0001@gmail.com"
+PASSWORD = "Shabaan@6894"
+BOT_TOKEN = "8991152186:AAHpCTzjoRnG-Gh0jFEHGyrfzaRhSqDlRw4"
 CHAT_IDS = [
-    "YOUR_CHAT_ID_HERE",
+    "6834606293",
 ]
 REFRESH_INTERVAL = 2  # ⚡ تقليل من 3 إلى 2 ثانية لسحب أسرع
 TIMEOUT = 100
