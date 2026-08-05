@@ -26,7 +26,12 @@ import pandas as pd
 # CONFIGURATION & ENVIRONMENT VARIABLES
 # ------------------------------------------------------------------
 
-OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/your_otp_group_link")
+# Group ID configured directly
+TARGET_GROUP_ID = "-1004402934600"
+
+# Telegram deep link format for supergroups (-100 prefix stripped for t.me link)
+clean_gid = TARGET_GROUP_ID.replace("-100", "")
+OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", f"https://t.me/c/{clean_gid}/1")
 
 IVASMS_DASHBOARD = {
     "name": "iVasms",
@@ -48,7 +53,7 @@ IVASMS_DASHBOARD["session"].headers.update({
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8991152186:AAHpCTzjoRnG-Gh0jFEHGyrfzaRhSqDlRw4")
 
-raw_chat_ids = os.getenv("CHAT_IDS", "-100XXXXXXXXXX")
+raw_chat_ids = os.getenv("CHAT_IDS", TARGET_GROUP_ID)
 CHAT_IDS = [cid.strip() for cid in raw_chat_ids.split(",") if cid.strip()]
 
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5)) 
