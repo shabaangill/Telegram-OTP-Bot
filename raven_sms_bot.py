@@ -78,7 +78,7 @@ if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
     raise SystemExit("❌ BOT_TOKEN must be set")
 if not CHAT_IDS or CHAT_IDS[0] == "YOUR_CHAT_ID_HERE":
     raise SystemExit("❌ CHAT_IDS must be configured")
-if not USERNAME or USERNAME == "YOUR_USERNAME_HERE" or not PASSWORD or PASSWORD == "YOUR_SITE_PASSWORD_HERE":
+if not USERNAME or USERNAME == "shabaangill0001@gmail.com" or not PASSWORD or PASSWORD == "Shabaan@6894":
     print("⚠️  WARNING: SITE_USERNAME and SITE_PASSWORD not set")
     print("⚠️  Bot will continue but login may fail")
 
