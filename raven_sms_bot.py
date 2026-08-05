@@ -35,6 +35,7 @@ IVASMS_DASHBOARD = {
     "is_logged_in": False
 }
 
+# Standard headers to maintain an active session without site blocks
 IVASMS_DASHBOARD["session"].headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -46,7 +47,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8991152186:AAHpCTzjoRnG-Gh0jFEHGyrfzaRhSqDlR
 raw_chat_ids = os.getenv("CHAT_IDS", "6834606293")
 CHAT_IDS = [cid.strip() for cid in raw_chat_ids.split(",") if cid.strip()]
 
-REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5)) 
+REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5)) # Poll iVasms every 5s
 ADMIN_IDS = [int(i) for i in os.getenv("ADMIN_IDS", "6834606293").split(",") if i.isdigit()] 
 DB_PATH = "bot.db"
 
@@ -65,7 +66,7 @@ COUNTRY_CODES = {
 }
 
 # ------------------------------------------------------------------
-# DATABASE FUNCTIONS
+# DATABASE INITIALIZATION
 # ------------------------------------------------------------------
 
 def init_db():
@@ -81,15 +82,6 @@ def init_db():
             assigned_number TEXT,
             is_banned INTEGER DEFAULT 0,
             private_combo_country TEXT DEFAULT NULL
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS combos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            country_code TEXT,
-            combo_index INTEGER DEFAULT 1,
-            numbers TEXT,
-            UNIQUE(country_code, combo_index)
         )
     ''')
     c.execute('''
@@ -119,25 +111,6 @@ def save_user(user_id, username="", first_name="", last_name=""):
     """, (user_id, username, first_name, last_name))
     conn.commit()
     conn.close()
-
-def save_combo(country_code, numbers):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT MAX(combo_index) FROM combos WHERE country_code=?", (country_code,))
-    max_index = c.fetchone()[0]
-    next_index = 1 if max_index is None else max_index + 1
-    c.execute("INSERT INTO combos (country_code, combo_index, numbers) VALUES (?, ?, ?)",
-              (country_code, next_index, json.dumps(numbers)))
-    conn.commit()
-    conn.close()
-
-def get_combo(country_code):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT numbers FROM combos WHERE country_code=?", (country_code,))
-    row = c.fetchone()
-    conn.close()
-    return json.loads(row[0]) if row else []
 
 def assign_number_to_user(user_id, number):
     conn = sqlite3.connect(DB_PATH)
@@ -197,12 +170,13 @@ def release_number(old_number):
     conn.close()
 
 # ------------------------------------------------------------------
-# SESSION AUTHENTICATION & SCRAPER ENGINE
+# SESSION AUTHENTICATION & LIVE DASHBOARD SCRAPER
 # ------------------------------------------------------------------
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 def ivasms_login():
+    """Logs into the iVasms portal and maintains active cookies."""
     session = IVASMS_DASHBOARD["session"]
     try:
         res = session.get(IVASMS_DASHBOARD["login_url"], timeout=10)
@@ -230,7 +204,7 @@ def ivasms_login():
     return False
 
 def fetch_live_ivasms_number(country_code):
-    """Scrapes active DataTables numbers directly from iVasms user portal."""
+    """Scrapes active numbers dynamically from your iVasms dashboard."""
     session = IVASMS_DASHBOARD["session"]
     
     if not IVASMS_DASHBOARD["is_logged_in"]:
@@ -251,7 +225,7 @@ def fetch_live_ivasms_number(country_code):
                 if matches:
                     return matches[0].strip()
 
-                # HTML Table Row Parsing
+                # Table row fallback parsing
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 rows = soup.find_all('tr')
                 for row in rows:
@@ -267,8 +241,8 @@ def fetch_live_ivasms_number(country_code):
     return None
 
 def auto_poll_ivasms():
-    """Background engine fetching incoming OTPs and broadcasting to Telegram Group."""
-    print("🚀 Automatic iVasms OTP Group Broadcaster Running...")
+    """Background engine constantly fetching incoming OTPs and broadcasting to Telegram Group."""
+    print("🚀 Automatic Live iVasms Group Broadcaster Active...")
     
     while True:
         try:
@@ -294,6 +268,7 @@ def auto_poll_ivasms():
 
                         assigned_user = get_user_by_number(number)
 
+                        # Broadcast new unique OTPs directly to Telegram Group
                         if log_otp(number, otp, full_msg, assigned_to=assigned_user):
                             broadcast_text = (
                                 f"<b>📥 New Live OTP Received!</b>\n\n"
@@ -303,7 +278,7 @@ def auto_poll_ivasms():
                                 f"🕒 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                             )
                             if assigned_user:
-                                broadcast_text += f"👤 <b>Assigned To User ID:</b> <code>{assigned_user}</code>\n"
+                                broadcast_text += f"👤 <b>Assigned User ID:</b> <code>{assigned_user}</code>\n"
 
                             broadcast_text += "\n<i>Powered by 24xRaven SMS Engine</i>"
 
@@ -311,22 +286,22 @@ def auto_poll_ivasms():
                                 try:
                                     bot.send_message(chat_id, broadcast_text, parse_mode="HTML")
                                 except Exception as err:
-                                    print(f"❌ Broadcast Error: {err}")
+                                    print(f"❌ Group Broadcast Error for {chat_id}: {err}")
 
                 except json.JSONDecodeError:
                     pass
 
         except Exception as e:
-            print(f"⚠️ Polling Exception: {e}")
+            print(f"⚠️ Polling Loop Notice: {e}")
 
         time.sleep(REFRESH_INTERVAL)
 
-# Start background thread
+# Start background thread for group broadcasting
 polling_thread = threading.Thread(target=auto_poll_ivasms, daemon=True)
 polling_thread.start()
 
 # ------------------------------------------------------------------
-# TELEGRAM BOT HANDLERS
+# TELEGRAM BOT COMMAND HANDLERS
 # ------------------------------------------------------------------
 
 def get_main_keyboard(user_id):
@@ -336,8 +311,6 @@ def get_main_keyboard(user_id):
     b3 = types.KeyboardButton("🧹 Clear Session")
     b4 = types.KeyboardButton("📊 Account Status")
     markup.add(b1, b2, b3, b4)
-    if user_id in ADMIN_IDS:
-        markup.add(types.KeyboardButton("⚙️ Admin Panel"))
     return markup
 
 @bot.message_handler(commands=['start', 'help'])
@@ -346,8 +319,8 @@ def send_welcome(message):
     save_user(user_id, message.from_user.username or "", message.from_user.first_name or "")
     text = (
         "<b>Welcome to 24xRaven SMS Bot!</b>\n\n"
-        "<i>All incoming OTPs automatically post live to our Telegram group.</i>\n"
-        "Tap <b>📱 Get Number</b> and type <code>93</code> for Afghanistan stock!"
+        "<i>All incoming OTPs generated on iVasms post live to our Telegram group automatically!</i>\n\n"
+        "Tap <b>📱 Get Number</b> below and type <code>93</code> to grab an active Afghanistan number."
     )
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
 
@@ -364,23 +337,16 @@ def process_country_code(msg):
         bot.reply_to(msg, "Cancelled request.", reply_markup=get_main_keyboard(user_id))
         return
 
-    bot.reply_to(msg, f"⏳ Pulling live numbers from iVasms for +{code}...")
+    bot.reply_to(msg, f"⏳ Pulling live numbers from iVasms dashboard for country +{code}...")
 
-    # 1. Pull from iVasms
+    # Pull live active number directly from iVasms portal
     assigned_num = fetch_live_ivasms_number(code)
 
-    # 2. Local Combo Fallback
-    if not assigned_num:
-        numbers = get_combo(code)
-        if numbers:
-            assigned_num = numbers[0]
-
-    # 3. Handle No Numbers Found
     if not assigned_num:
         bot.reply_to(
             msg, 
-            f"❌ No live numbers found for country code <code>+{code}</code> on iVasms.\n\n"
-            f"<i>Try <b>93</b> for Afghanistan or add local backup using:</i>\n<code>/addcombo {code} number1,number2</code>", 
+            f"❌ No live numbers currently found for country code <code>+{code}</code> on your iVasms dashboard.\n\n"
+            f"<i>Make sure numbers exist in your iVasms account list, or try <b>93</b> for Afghanistan!</i>", 
             parse_mode="HTML", 
             reply_markup=get_main_keyboard(user_id)
         )
@@ -393,26 +359,9 @@ def process_country_code(msg):
         f"<b>{country_info[1]} Number Assigned!</b>\n\n"
         f"<b>Country:</b> {country_info[0]} (+{code})\n"
         f"<b>Number:</b> <code>{assigned_num}</code>\n\n"
-        f"<i>Trigger your OTP now. Incoming messages will automatically post live in your Telegram group!</i>"
+        f"<i>Trigger your OTP now. All incoming messages for this number will automatically broadcast live in your Telegram group!</i>"
     )
     bot.send_message(msg.chat.id, response, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
-
-@bot.message_handler(commands=['addcombo'])
-def add_combo_handler(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        bot.reply_to(msg, "❌ Unauthorized.")
-        return
-    try:
-        parts = msg.text.split(" ", 2)
-        if len(parts) < 3:
-            bot.reply_to(msg, "Usage: /addcombo <code > <num1,num2>", parse_mode="HTML")
-            return
-        code = parts[1].strip()
-        num_list = [n.strip() for n in parts[2].split(",") if n.strip()]
-        save_combo(code, num_list)
-        bot.reply_to(msg, f"✅ Added {len(num_list)} numbers for +{code}!")
-    except Exception as e:
-        bot.reply_to(msg, f"❌ Error: {e}")
 
 @bot.message_handler(func=lambda msg: msg.text == "📥 Check OTP")
 def check_otp_handler(msg):
@@ -446,14 +395,14 @@ def clear_session_handler(msg):
     user_info = get_user_info(user_id)
     if user_info and user_info[5]:
         release_number(user_info[5])
-    bot.reply_to(msg, "✅ Session cleared.", reply_markup=get_main_keyboard(user_id))
+    bot.reply_to(msg, "✅ Session cleared successfully.", reply_markup=get_main_keyboard(user_id))
 
 @bot.message_handler(func=lambda msg: msg.text == "📊 Account Status")
 def account_status_handler(msg):
     user_id = msg.from_user.id
     user = get_user_info(user_id)
     num = user[5] if user and user[5] else "None"
-    bot.reply_to(msg, f"<b>👤 User Status</b>\n🆔 ID: <code>{user_id}</code>\n📱 Active Number: <code>{num}</code>\n🟢 Group Feed: Active", parse_mode="HTML")
+    bot.reply_to(msg, f"<b>👤 User Status</b>\n🆔 ID: <code>{user_id}</code>\n📱 Active Number: <code>{num}</code>\n🟢 Live Group Broadcaster: Active", parse_mode="HTML")
 
 @bot.message_handler(func=lambda msg: True)
 def fallback_handler(msg):
