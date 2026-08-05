@@ -198,7 +198,7 @@ def release_number(old_number):
     conn.close()
 
 # ------------------------------------------------------------------
-# SESSION AUTHENTICATION & SCRAPER
+# SESSION AUTHENTICATION & SCRAPER ENGINE
 # ------------------------------------------------------------------
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -232,39 +232,59 @@ def ivasms_login():
     return False
 
 def fetch_live_ivasms_number(country_code):
-    """Scrapes active numbers from ivasms.com/portal/numbers."""
+    """Hits the DataTables AJAX endpoint and HTML web pages on ivasms.com to fetch live active numbers."""
     session = IVASMS_DASHBOARD["session"]
     
     if not IVASMS_DASHBOARD["is_logged_in"]:
         ivasms_login()
 
-    urls_to_scan = [
-        IVASMS_DASHBOARD["my_numbers_url"],
-        f"{IVASMS_DASHBOARD['base_url']}/portal/numbers/data",
-        f"{IVASMS_DASHBOARD['base_url']}/portal/get_number?country={country_code}"
+    # 1. Try DataTables AJAX Endpoints
+    ajax_urls = [
+        f"{IVASMS_DASHBOARD['base_url']}/portal/numbers/get_data",
+        f"{IVASMS_DASHBOARD['base_url']}/portal/numbers/list",
+        f"{IVASMS_DASHBOARD['base_url']}/portal/get_numbers"
     ]
 
-    for url in urls_to_scan:
+    dt_payload = {
+        "draw": "1",
+        "start": "0",
+        "length": "1000",
+        "search[value]": str(country_code)
+    }
+
+    headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json, text/javascript, */*; q=0.01"
+    }
+
+    for url in ajax_urls:
         try:
-            resp = session.get(url, timeout=10)
+            resp = session.post(url, data=dt_payload, headers=headers, timeout=10)
             if resp.status_code == 200:
-                # 1. Regex match numbers starting with country code
-                matches = re.findall(rf'\b{country_code}\d{{7,12}}\b', resp.text)
-                if matches:
-                    return matches[0].strip()
-
-                # 2. Parse HTML table rows
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                rows = soup.find_all('tr')
-                for row in rows:
-                    text = row.get_text()
-                    if country_code in text:
-                        num_match = re.findall(rf'\b{country_code}\d{{7,12}}\b', text)
-                        if num_match:
-                            return num_match[0].strip()
-
+                text_data = resp.text
+                matches = re.findall(rf'\b{country_code}?\d{{8,11}}\b', text_data)
+                for num in matches:
+                    full_num = num if num.startswith(country_code) else f"{country_code}{num}"
+                    if len(full_num) >= 9:
+                        return full_num
         except Exception as e:
-            print(f"Fetch Exception for {url}: {e}")
+            print(f"DataTables fetch error for {url}: {e}")
+
+    # 2. Scrape Page Source & Table DOM Elements
+    for page_url in [IVASMS_DASHBOARD["my_numbers_url"], f"{IVASMS_DASHBOARD['base_url']}/portal/numbers"]:
+        try:
+            resp = session.get(page_url, timeout=10)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                for td in soup.find_all(['td', 'span', 'div']):
+                    text = td.get_text(strip=True)
+                    if re.match(rf'^(?:\+{country_code}|00{country_code}|{country_code})?\d{{7,11}}$', text):
+                        clean_num = re.sub(r'\D', '', text)
+                        if not clean_num.startswith(country_code):
+                            clean_num = f"{country_code}{clean_num}"
+                        return clean_num
+        except Exception as e:
+            print(f"Page scrape error for {page_url}: {e}")
 
     return None
 
@@ -296,7 +316,6 @@ def auto_poll_ivasms():
 
                         assigned_user = get_user_by_number(number)
 
-                        # Broadcast unique OTPs directly to group
                         if log_otp(number, otp, full_msg, assigned_to=assigned_user):
                             broadcast_text = (
                                 f"<b>📥 New Live OTP Received!</b>\n\n"
@@ -324,7 +343,6 @@ def auto_poll_ivasms():
 
         time.sleep(REFRESH_INTERVAL)
 
-# Start background thread
 polling_thread = threading.Thread(target=auto_poll_ivasms, daemon=True)
 polling_thread.start()
 
@@ -369,7 +387,7 @@ def process_country_code(msg):
 
     bot.reply_to(msg, f"⏳ Connecting to ivasms.com for country +{code}...")
 
-    # 1. Scrape live number from ivasms.com/portal/numbers
+    # 1. Scrape live number from ivasms.com
     assigned_num = fetch_live_ivasms_number(code)
 
     # 2. Database Stock Fallback
