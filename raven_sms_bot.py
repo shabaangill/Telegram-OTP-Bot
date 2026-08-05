@@ -51,10 +51,8 @@ IVASMS_DASHBOARD = {
 USERNAME = os.getenv("SITE_USERNAME", "shabaangill0001@gmail.com")
 PASSWORD = os.getenv("SITE_PASSWORD", "Shabaan6894")
 
-# Load BOT_TOKEN dynamically from Railway Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8991152186:AAHpCTzjoRnG-Gh0jFEHGyrfzaRhSqDlRw4")
 
-# Load CHAT_IDS safely
 raw_chat_ids = os.getenv("CHAT_IDS", "6834606293")
 CHAT_IDS = [cid.strip() for cid in raw_chat_ids.split(",") if cid.strip()]
 
@@ -68,15 +66,14 @@ IDX_NUMBER = 2
 IDX_SMS = 5
 SENT_MESSAGES_FILE = "sent_messages.json"
 
-ADMIN_IDS = [int(i) for i in os.getenv("ADMIN_IDS", "0000000000").split(",") if i.isdigit()] 
+ADMIN_IDS = [int(i) for i in os.getenv("ADMIN_IDS", "6834606293").split(",") if i.isdigit()] 
 DB_PATH = "bot.db"
 FORCE_SUB_CHANNEL = None
 FORCE_SUB_ENABLED = False
 BOT_ACTIVE = True 
 
-# Verification Guard
 if not BOT_TOKEN:
-    raise SystemExit("❌ BOT_TOKEN environment variable is completely empty!")
+    raise SystemExit("❌ BOT_TOKEN environment variable is missing!")
 
 # ------------------------------------------------------------------
 # COUNTRY CODES DICTIONARY
@@ -272,7 +269,7 @@ COUNTRY_CODES = {
 }
 
 # ------------------------------------------------------------------
-# DATABASE MANAGEMENT FUNCTIONS
+# DATABASE FUNCTIONS
 # ------------------------------------------------------------------
 
 def get_setting(key):
@@ -387,7 +384,6 @@ def get_user(user_id):
 def save_user(user_id, username="", first_name="", last_name="", country_code=None, assigned_number=None, private_combo_country=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-
     existing_data = get_user(user_id)
     if existing_data:
         if country_code is None:
@@ -401,14 +397,7 @@ def save_user(user_id, username="", first_name="", last_name="", country_code=No
         REPLACE INTO users (user_id, username, first_name, last_name, country_code, assigned_number, is_banned, private_combo_country)
         VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT is_banned FROM users WHERE user_id=?), 0), ?)
     """, (
-        user_id,
-        username,
-        first_name,
-        last_name,
-        country_code,
-        assigned_number,
-        user_id,
-        private_combo_country
+        user_id, username, first_name, last_name, country_code, assigned_number, user_id, private_combo_country
     ))
     conn.commit()
     conn.close()
@@ -463,7 +452,6 @@ def get_combo(country_code, combo_index=1, user_id=None):
 def save_combo(country_code, numbers, user_id=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
     if user_id:
         c.execute("REPLACE INTO private_combos (user_id, country_code, numbers) VALUES (?, ?, ?)",
                   (user_id, country_code, json.dumps(numbers)))
@@ -471,10 +459,8 @@ def save_combo(country_code, numbers, user_id=None):
         c.execute("SELECT MAX(combo_index) FROM combos WHERE country_code=?", (country_code,))
         max_index = c.fetchone()[0]
         next_index = 1 if max_index is None else max_index + 1
-        
         c.execute("INSERT INTO combos (country_code, combo_index, numbers) VALUES (?, ?, ?)",
                   (country_code, next_index, json.dumps(numbers)))
-    
     conn.commit()
     conn.close()
 
@@ -483,18 +469,15 @@ def delete_combo(country_code, combo_index=None, user_id=None):
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
         c = conn.cursor()
-        
         if user_id:
             c.execute("DELETE FROM private_combos WHERE user_id=? AND country_code=?", (user_id, country_code))
         elif combo_index:
-            c.execute("DELETE FROM combos WHERE country_code=? AND combo_index=?", (country_code, combo_index))
+            c.execute("DELETE FROM combos WHERE country_code=? AND combo_index=?", (combo_index, country_code))
         else:
             c.execute("DELETE FROM combos WHERE country_code=?", (country_code,))
-        
         conn.commit()
         return True
-        
-    except sqlite3.Error as e:
+    except sqlite3.Error:
         if conn:
             conn.rollback()
         return False
@@ -559,12 +542,99 @@ def get_user_info(user_id):
     return row
 
 # ------------------------------------------------------------------
-# BOT INITIALIZATION & STARTUP LOGIC
+# BOT INITIALIZATION & HANDLERS
 # ------------------------------------------------------------------
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+def get_main_keyboard(user_id):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    b1 = types.KeyboardButton("📱 Get Number")
+    b2 = types.KeyboardButton("📥 Check OTP")
+    b3 = types.KeyboardButton("🚀 Next Round Signal")
+    b4 = types.KeyboardButton("🧹 Clear Session")
+    b5 = types.KeyboardButton("📊 Account Status")
+    markup.add(b1, b2, b3, b4, b5)
+    
+    if user_id in ADMIN_IDS:
+        markup.add(types.KeyboardButton("⚙️ Admin Panel"))
+    return markup
+
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    if is_banned(user_id):
+        bot.reply_to(message, "❌ Access Denied: You are banned from using this bot.")
+        return
+
+    save_user(
+        user_id=user_id,
+        username=message.from_user.username or "",
+        first_name=message.from_user.first_name or "",
+        last_name=message.from_user.last_name or ""
+    )
+    
+    text = (
+        "<b>Welcome to 24xRaven SMS Bot!</b>\n\n"
+        "<i>Telegram SMS & Verification Portal</i>\n"
+        "Select an option from the menu below to get started:"
+    )
+    bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
+
+@bot.message_handler(func=lambda msg: msg.text == "🚀 Next Round Signal")
+def next_signal_handler(msg):
+    bot.reply_to(msg, "📊 Calculating live strategic targets... Standby for next signal.")
+
+@bot.message_handler(func=lambda msg: msg.text == "🧹 Clear Session")
+def clear_session_handler(msg):
+    user_id = msg.from_user.id
+    user_info = get_user_info(user_id)
+    if user_info and user_info[5]:
+        release_number(user_info[5])
+    bot.reply_to(msg, "✅ Active session cleared successfully.", reply_markup=get_main_keyboard(user_id))
+
+@bot.message_handler(func=lambda msg: msg.text == "📊 Account Status")
+def account_status_handler(msg):
+    user_id = msg.from_user.id
+    user = get_user_info(user_id)
+    num = user[5] if user and user[5] else "None"
+    text = (
+        f"<b>👤 User Status</b>\n"
+        f"🆔 User ID: <code>{user_id}</code>\n"
+        f"📱 Assigned Number: <code>{num}</code>\n"
+        f"🟢 System Status: Active"
+    )
+    bot.send_message(msg.chat.id, text, parse_mode="HTML")
+
+@bot.message_handler(func=lambda msg: msg.text == "📱 Get Number")
+def get_number_handler(msg):
+    bot.reply_to(msg, "Send country code (e.g. 1 for US, 92 for PK, 44 for UK):")
+
+@bot.message_handler(func=lambda msg: msg.text == "📥 Check OTP")
+def check_otp_handler(msg):
+    user_id = msg.from_user.id
+    user = get_user_info(user_id)
+    if not user or not user[5]:
+        bot.reply_to(msg, "❌ You don't have an active assigned number. Use 📱 Get Number first.")
+        return
+    bot.reply_to(msg, f"🔍 Checking OTP logs for active number: <code>{user[5]}</code>", parse_mode="HTML")
+
+@bot.message_handler(func=lambda msg: msg.text == "⚙️ Admin Panel")
+def admin_panel_handler(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        bot.reply_to(msg, "❌ Unauthorized.")
+        return
+    bot.reply_to(msg, "⚙️ <b>Admin Dashboard</b>\nSystem operational.", parse_mode="HTML")
+
+@bot.message_handler(func=lambda msg: True)
+def fallback_handler(msg):
+    bot.reply_to(msg, f"Received: {msg.text}\nUse /start to open menu.", reply_markup=get_main_keyboard(msg.from_user.id))
+
+# ------------------------------------------------------------------
+# MAIN LOOP
+# ------------------------------------------------------------------
+
 if __name__ == "__main__":
-    print(f"✅ Starting Telegram SMS Bot...")
-    print(f"🤖 Connected via Bot Token successfully!")
+    print(f"✅ Starting 24xRaven SMS Bot...")
+    print(f"🤖 Telegram Polling Online!")
     bot.infinity_polling(skip_pending=True)
