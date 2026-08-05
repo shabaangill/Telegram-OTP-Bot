@@ -581,6 +581,77 @@ def send_welcome(message):
     )
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
 
+# --- STEP-BY-STEP GET NUMBER FLOW ---
+
+@bot.message_handler(func=lambda msg: msg.text == "📱 Get Number")
+def get_number_handler(msg):
+    sent_msg = bot.reply_to(msg, "Send country code (e.g. 1 for US, 92 for PK, 44 for UK):")
+    bot.register_next_step_handler(sent_msg, process_country_code)
+
+def process_country_code(msg):
+    user_id = msg.from_user.id
+    code = msg.text.strip()
+    
+    if code.startswith("/") or code in ["📱 Get Number", "📥 Check OTP", "🚀 Next Round Signal", "🧹 Clear Session", "📊 Account Status"]:
+        bot.reply_to(msg, "Cancelled number request.", reply_markup=get_main_keyboard(user_id))
+        return
+
+    numbers = get_combo(code, combo_index=1, user_id=user_id)
+    if not numbers:
+        numbers = get_combo(code, combo_index=1)
+    
+    if not numbers:
+        bot.reply_to(
+            msg, 
+            f"❌ No numbers available for country code <code>+{code}</code> right now.", 
+            parse_mode="HTML", 
+            reply_markup=get_main_keyboard(user_id)
+        )
+        return
+    
+    assigned_num = numbers[0]
+    assign_number_to_user(user_id, assigned_num)
+    
+    country_info = COUNTRY_CODES.get(code, ("Unknown", "🌐", "XX"))
+    flag = country_info[1]
+    c_name = country_info[0]
+
+    response = (
+        f"<b>{flag} Number Assigned!</b>\n\n"
+        f"<b>Country:</b> {c_name} (+{code})\n"
+        f"<b>Number:</b> <code>{assigned_num}</code>\n\n"
+        f"<i>Use <b>📥 Check OTP</b> button to view incoming SMS.</i>"
+    )
+    bot.send_message(msg.chat.id, response, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
+
+# --- OTHER MENU HANDLERS ---
+
+@bot.message_handler(func=lambda msg: msg.text == "📥 Check OTP")
+def check_otp_handler(msg):
+    user_id = msg.from_user.id
+    user = get_user_info(user_id)
+    if not user or not user[5]:
+        bot.reply_to(msg, "❌ You don't have an active assigned number. Click 📱 Get Number first.")
+        return
+    
+    assigned_num = user[5]
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT otp, full_message, timestamp FROM otp_logs WHERE number=? ORDER BY id DESC LIMIT 5", (assigned_num,))
+    logs = c.fetchall()
+    conn.close()
+
+    if not logs:
+        bot.reply_to(msg, f"⏳ No SMS received yet for <code>{assigned_num}</code>. Try again in a few seconds.", parse_mode="HTML")
+        return
+
+    text = f"<b>📥 Latest SMS Logs for <code>{assigned_num}</code>:</b>\n\n"
+    for log in logs:
+        otp, full_msg, tstamp = log
+        text += f"🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <b>MSG:</b> {full_msg}\n🕒 <i>{tstamp}</i>\n-------------------\n"
+    
+    bot.send_message(msg.chat.id, text, parse_mode="HTML")
+
 @bot.message_handler(func=lambda msg: msg.text == "🚀 Next Round Signal")
 def next_signal_handler(msg):
     bot.reply_to(msg, "📊 Calculating live strategic targets... Standby for next signal.")
@@ -605,19 +676,6 @@ def account_status_handler(msg):
         f"🟢 System Status: Active"
     )
     bot.send_message(msg.chat.id, text, parse_mode="HTML")
-
-@bot.message_handler(func=lambda msg: msg.text == "📱 Get Number")
-def get_number_handler(msg):
-    bot.reply_to(msg, "Send country code (e.g. 1 for US, 92 for PK, 44 for UK):")
-
-@bot.message_handler(func=lambda msg: msg.text == "📥 Check OTP")
-def check_otp_handler(msg):
-    user_id = msg.from_user.id
-    user = get_user_info(user_id)
-    if not user or not user[5]:
-        bot.reply_to(msg, "❌ You don't have an active assigned number. Use 📱 Get Number first.")
-        return
-    bot.reply_to(msg, f"🔍 Checking OTP logs for active number: <code>{user[5]}</code>", parse_mode="HTML")
 
 @bot.message_handler(func=lambda msg: msg.text == "⚙️ Admin Panel")
 def admin_panel_handler(msg):
