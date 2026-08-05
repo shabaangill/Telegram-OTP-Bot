@@ -419,21 +419,6 @@ def unban_user(user_id):
 def is_banned(user_id):
     user = get_user(user_id)
     return user and user[6] == 1
-    
-def is_maintenance_mode():
-    return not BOT_ACTIVE
-
-def set_maintenance_mode(status):
-    global BOT_ACTIVE
-    BOT_ACTIVE = not status
-    
-def get_all_users():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE is_banned=0")
-    users = [row[0] for row in c.fetchall()]
-    conn.close()
-    return users
 
 def get_combo(country_code, combo_index=1, user_id=None):
     conn = sqlite3.connect(DB_PATH)
@@ -464,49 +449,12 @@ def save_combo(country_code, numbers, user_id=None):
     conn.commit()
     conn.close()
 
-def delete_combo(country_code, combo_index=None, user_id=None):
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
-        c = conn.cursor()
-        if user_id:
-            c.execute("DELETE FROM private_combos WHERE user_id=? AND country_code=?", (user_id, country_code))
-        elif combo_index:
-            c.execute("DELETE FROM combos WHERE country_code=? AND combo_index=?", (combo_index, country_code))
-        else:
-            c.execute("DELETE FROM combos WHERE country_code=?", (country_code,))
-        conn.commit()
-        return True
-    except sqlite3.Error:
-        if conn:
-            conn.rollback()
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def get_all_combos():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT country_code, combo_index FROM combos ORDER BY country_code, combo_index")
-    combos = c.fetchall()
-    conn.close()
-    return combos
-
 def assign_number_to_user(user_id, number):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("UPDATE users SET assigned_number=? WHERE user_id=?", (number, user_id))
     conn.commit()
     conn.close()
-
-def get_user_by_number(number):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE assigned_number=?", (number,))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else None
 
 def log_otp(number, otp, full_message, assigned_to=None):
     conn = sqlite3.connect(DB_PATH)
@@ -525,14 +473,6 @@ def release_number(old_number):
     conn.commit()
     conn.close()
 
-def get_otp_logs():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT * FROM otp_logs")
-    logs = c.fetchall()
-    conn.close()
-    return logs
-
 def get_user_info(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -542,7 +482,7 @@ def get_user_info(user_id):
     return row
 
 # ------------------------------------------------------------------
-# BOT INITIALIZATION & HANDLERS
+# BOT INITIALIZATION & LIVE IVASMS INTEGRATION
 # ------------------------------------------------------------------
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -581,7 +521,7 @@ def send_welcome(message):
     )
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
 
-# --- STEP-BY-STEP GET NUMBER FLOW ---
+# --- LIVE IVASMS NUMBER REQUEST ---
 
 @bot.message_handler(func=lambda msg: msg.text == "📱 Get Number")
 def get_number_handler(msg):
@@ -596,20 +536,48 @@ def process_country_code(msg):
         bot.reply_to(msg, "Cancelled number request.", reply_markup=get_main_keyboard(user_id))
         return
 
-    numbers = get_combo(code, combo_index=1, user_id=user_id)
-    if not numbers:
-        numbers = get_combo(code, combo_index=1)
-    
-    if not numbers:
+    bot.reply_to(msg, f"⏳ Connecting to iVasms server for country +{code}...")
+
+    assigned_num = None
+    try:
+        session = IVASMS_DASHBOARD["session"]
+        
+        # 1. Login if session isn't active
+        if not IVASMS_DASHBOARD["is_logged_in"]:
+            login_payload = {
+                "email": IVASMS_DASHBOARD["username"],
+                "password": IVASMS_DASHBOARD["password"]
+            }
+            res = session.post(IVASMS_DASHBOARD["login_url"], data=login_payload, timeout=15)
+            if res.status_code == 200:
+                IVASMS_DASHBOARD["is_logged_in"] = True
+
+        # 2. Query iVasms portal endpoint for live number
+        num_url = f"{IVASMS_DASHBOARD['base_url']}/portal/get_number?country={code}"
+        resp = session.get(num_url, timeout=15)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            assigned_num = data.get("number") or data.get("phone")
+
+    except Exception as e:
+        print(f"iVasms Connection Notice: {e}")
+
+    # Fallback to local database if API fails or returns empty
+    if not assigned_num:
+        numbers = get_combo(code, combo_index=1, user_id=user_id) or get_combo(code, combo_index=1)
+        if numbers:
+            assigned_num = numbers[0]
+
+    if not assigned_num:
         bot.reply_to(
             msg, 
-            f"❌ No numbers available for country code <code>+{code}</code> right now.", 
+            f"❌ No live numbers available for country code <code>+{code}</code> right now.", 
             parse_mode="HTML", 
             reply_markup=get_main_keyboard(user_id)
         )
         return
-    
-    assigned_num = numbers[0]
+
     assign_number_to_user(user_id, assigned_num)
     
     country_info = COUNTRY_CODES.get(code, ("Unknown", "🌐", "XX"))
@@ -617,14 +585,14 @@ def process_country_code(msg):
     c_name = country_info[0]
 
     response = (
-        f"<b>{flag} Number Assigned!</b>\n\n"
+        f"<b>{flag} iVasms Number Assigned!</b>\n\n"
         f"<b>Country:</b> {c_name} (+{code})\n"
         f"<b>Number:</b> <code>{assigned_num}</code>\n\n"
-        f"<i>Use <b>📥 Check OTP</b> button to view incoming SMS.</i>"
+        f"<i>Send your OTP request now. Tap <b>📥 Check OTP</b> to read incoming SMS.</i>"
     )
     bot.send_message(msg.chat.id, response, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
 
-# --- OTHER MENU HANDLERS ---
+# --- LIVE IVASMS OTP CHECKER ---
 
 @bot.message_handler(func=lambda msg: msg.text == "📥 Check OTP")
 def check_otp_handler(msg):
@@ -635,6 +603,35 @@ def check_otp_handler(msg):
         return
     
     assigned_num = user[5]
+    bot.reply_to(msg, f"🔍 Querying iVasms for incoming SMS to <code>{assigned_num}</code>...", parse_mode="HTML")
+
+    # Query live iVasms portal endpoint
+    try:
+        session = IVASMS_DASHBOARD["session"]
+        params = {"number": assigned_num}
+        resp = session.get(IVASMS_DASHBOARD["sms_api_endpoint"], params=params, timeout=15)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            sms_list = data.get("messages", []) or data.get("sms", [])
+            
+            if sms_list:
+                text = f"<b>📥 Live iVasms OTP Received for <code>{assigned_num}</code>:</b>\n\n"
+                for item in sms_list:
+                    otp = item.get("otp", "N/A")
+                    sms_text = item.get("message", "No content")
+                    tstamp = item.get("time", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                    
+                    text += f"🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <b>MSG:</b> {sms_text}\n🕒 <i>{tstamp}</i>\n-------------------\n"
+                    log_otp(assigned_num, otp, sms_text, assigned_to=user_id)
+                
+                bot.send_message(msg.chat.id, text, parse_mode="HTML")
+                return
+
+    except Exception as e:
+        print(f"iVasms Live OTP Check Error: {e}")
+
+    # Fallback to local SQLite database logs
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT otp, full_message, timestamp FROM otp_logs WHERE number=? ORDER BY id DESC LIMIT 5", (assigned_num,))
@@ -645,12 +642,33 @@ def check_otp_handler(msg):
         bot.reply_to(msg, f"⏳ No SMS received yet for <code>{assigned_num}</code>. Try again in a few seconds.", parse_mode="HTML")
         return
 
-    text = f"<b>📥 Latest SMS Logs for <code>{assigned_num}</code>:</b>\n\n"
+    text = f"<b>📥 Saved SMS Logs for <code>{assigned_num}</code>:</b>\n\n"
     for log in logs:
         otp, full_msg, tstamp = log
         text += f"🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <b>MSG:</b> {full_msg}\n🕒 <i>{tstamp}</i>\n-------------------\n"
     
     bot.send_message(msg.chat.id, text, parse_mode="HTML")
+
+# --- OTHER COMMANDS & ADMIN ---
+
+@bot.message_handler(commands=['addcombo'])
+def add_combo_handler(msg):
+    if msg.from_user.id not in ADMIN_IDS:
+        bot.reply_to(msg, "❌ Unauthorized.")
+        return
+    try:
+        parts = msg.text.split(" ", 2)
+        if len(parts) < 3:
+            bot.reply_to(msg, "⚠️ <b>Usage:</b> <code>/addcombo &lt;country_code&gt; &lt;num1,num2,...&gt;</code>", parse_mode="HTML")
+            return
+            
+        code = parts[1].strip()
+        num_list = [n.strip() for n in parts[2].split(",") if n.strip()]
+        
+        save_combo(code, num_list)
+        bot.reply_to(msg, f"✅ Added {len(num_list)} numbers for country code <code>+{code}</code>!", parse_mode="HTML")
+    except Exception as e:
+        bot.reply_to(msg, f"❌ Error adding combo: {e}")
 
 @bot.message_handler(func=lambda msg: msg.text == "🚀 Next Round Signal")
 def next_signal_handler(msg):
