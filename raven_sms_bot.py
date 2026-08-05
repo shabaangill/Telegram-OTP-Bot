@@ -26,15 +26,23 @@ from bs4 import BeautifulSoup
 
 IVASMS_DASHBOARD = {
     "name": "iVasms",
-    "type": "ivasms",
     "login_url": "https://ivas.tempnum.qzz.io/login",
     "base_url": "https://ivas.tempnum.qzz.io",
+    "get_num_endpoint": "https://ivas.tempnum.qzz.io/portal/get_number",
     "sms_api_endpoint": "https://ivas.tempnum.qzz.io/portal/sms/received/getsms",
     "username": os.getenv("SITE_USERNAME", "shabaangill0001@gmail.com"),
     "password": os.getenv("SITE_PASSWORD", "Shabaan@6894"),
     "session": requests.Session(),
     "is_logged_in": False
 }
+
+# Standard browser headers to prevent site blocks / redirects
+IVASMS_DASHBOARD["session"].headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Connection": "keep-alive"
+})
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8991152186:AAHpCTzjoRnG-Gh0jFEHGyrfzaRhSqDlRw4")
 
@@ -45,7 +53,6 @@ CHAT_IDS = [cid.strip() for cid in raw_chat_ids.split(",") if cid.strip()]
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5)) # Poll every 5 seconds
 ADMIN_IDS = [int(i) for i in os.getenv("ADMIN_IDS", "6834606293").split(",") if i.isdigit()] 
 DB_PATH = "bot.db"
-BOT_ACTIVE = True 
 
 if not BOT_TOKEN:
     raise SystemExit("❌ BOT_TOKEN environment variable is missing!")
@@ -197,22 +204,25 @@ def release_number(old_number):
     conn.close()
 
 # ------------------------------------------------------------------
-# BOT & IVASMS BACKGROUND MONITOR
+# SESSION AUTHENTICATION & BOT ENGINE
 # ------------------------------------------------------------------
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 def ivasms_login():
+    """Authenticates with iVasms web portal and extracts session cookies."""
     session = IVASMS_DASHBOARD["session"]
     try:
-        login_pg = session.get(IVASMS_DASHBOARD["login_url"], timeout=10)
-        soup = BeautifulSoup(login_pg.text, 'html.parser')
+        # Step 1: Load Login Page to Grab CSRF Token
+        res = session.get(IVASMS_DASHBOARD["login_url"], timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
         
         csrf_token = None
-        csrf_input = soup.find('input', {'name': '_token'}) or soup.find('input', {'name': 'csrf_token'})
-        if csrf_input:
-            csrf_token = csrf_input.get('value')
+        token_elem = soup.find('input', {'name': '_token'}) or soup.find('input', {'name': 'csrf_token'})
+        if token_elem:
+            csrf_token = token_elem.get('value')
 
+        # Step 2: Perform Login
         login_payload = {
             "email": IVASMS_DASHBOARD["username"],
             "username": IVASMS_DASHBOARD["username"],
@@ -221,16 +231,63 @@ def ivasms_login():
         if csrf_token:
             login_payload["_token"] = csrf_token
 
-        session.post(IVASMS_DASHBOARD["login_url"], data=login_payload, timeout=10)
-        IVASMS_DASHBOARD["is_logged_in"] = True
-        return True
+        post_res = session.post(IVASMS_DASHBOARD["login_url"], data=login_payload, timeout=12)
+        
+        # Check if login redirected successfully to dashboard or portal
+        if post_res.status_code in [200, 302]:
+            IVASMS_DASHBOARD["is_logged_in"] = True
+            print("✅ Successfully authenticated session on iVasms!")
+            return True
     except Exception as e:
-        print(f"❌ iVasms Login Error: {e}")
-        return False
+        print(f"❌ iVasms Login Session Error: {e}")
+    return False
+
+def fetch_live_ivasms_number(country_code):
+    """Fetches a live number from iVasms portal using authenticated session."""
+    session = IVASMS_DASHBOARD["session"]
+    
+    if not IVASMS_DASHBOARD["is_logged_in"]:
+        ivasms_login()
+
+    urls_to_try = [
+        f"{IVASMS_DASHBOARD['base_url']}/portal/get_number?country={country_code}",
+        f"{IVASMS_DASHBOARD['base_url']}/portal/numbers?country={country_code}",
+        f"{IVASMS_DASHBOARD['base_url']}/dashboard/get_number?code={country_code}"
+    ]
+
+    for url in urls_to_try:
+        try:
+            resp = session.get(url, timeout=10)
+            if resp.status_code == 200:
+                # 1. Try JSON response parsing
+                try:
+                    data = resp.json()
+                    num = None
+                    if isinstance(data, dict):
+                        num = data.get("number") or data.get("phone") or data.get("data")
+                    elif isinstance(data, list) and len(data) > 0:
+                        num = data[0].get("number") or data[0].get("phone")
+                    if num:
+                        return str(num).strip()
+                except json.JSONDecodeError:
+                    pass
+
+                # 2. Try HTML Parsing fallback
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                # Find phone numbers matching regex (e.g., +92... or 92...)
+                text_content = soup.get_text()
+                matches = re.findall(rf'\b\+?{country_code}\d{{7,12}}\b', text_content)
+                if matches:
+                    return matches[0].strip()
+
+        except Exception as e:
+            print(f"Error checking url {url}: {e}")
+
+    return None
 
 def auto_poll_ivasms():
-    """Background loop that fetches all new OTPs and broadcasts them to Telegram Groups."""
-    print("🚀 Automatic iVasms OTP Group Broadcaster Started...")
+    """Background thread that constantly checks iVasms for new incoming OTPs and forwards to Group."""
+    print("🚀 Automatic iVasms Group Broadcaster Active...")
     
     while True:
         try:
@@ -238,7 +295,7 @@ def auto_poll_ivasms():
             if not IVASMS_DASHBOARD["is_logged_in"]:
                 ivasms_login()
 
-            resp = session.get(IVASMS_DASHBOARD["sms_api_endpoint"], timeout=15)
+            resp = session.get(IVASMS_DASHBOARD["sms_api_endpoint"], timeout=12)
             
             if resp.status_code == 200:
                 try:
@@ -256,6 +313,7 @@ def auto_poll_ivasms():
 
                         assigned_user = get_user_by_number(number)
 
+                        # Broadcast new unique OTPs to group
                         if log_otp(number, otp, full_msg, assigned_to=assigned_user):
                             broadcast_text = (
                                 f"<b>📥 New Live OTP Received!</b>\n\n"
@@ -265,7 +323,7 @@ def auto_poll_ivasms():
                                 f"🕒 <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                             )
                             if assigned_user:
-                                broadcast_text += f"👤 <b>Assigned To:</b> <code>{assigned_user}</code>\n"
+                                broadcast_text += f"👤 <b>Assigned To User ID:</b> <code>{assigned_user}</code>\n"
 
                             broadcast_text += "\n<i>Powered by 24xRaven SMS Engine</i>"
 
@@ -273,7 +331,7 @@ def auto_poll_ivasms():
                                 try:
                                     bot.send_message(chat_id, broadcast_text, parse_mode="HTML")
                                 except Exception as err:
-                                    print(f"❌ Failed to broadcast to group {chat_id}: {err}")
+                                    print(f"❌ Broadcast Error for {chat_id}: {err}")
 
                 except json.JSONDecodeError:
                     pass
@@ -283,12 +341,12 @@ def auto_poll_ivasms():
 
         time.sleep(REFRESH_INTERVAL)
 
-# Start background monitoring thread
+# Start background worker thread
 polling_thread = threading.Thread(target=auto_poll_ivasms, daemon=True)
 polling_thread.start()
 
 # ------------------------------------------------------------------
-# BOT KEYBOARD & HANDLERS
+# BOT UI & COMMAND HANDLERS
 # ------------------------------------------------------------------
 
 def get_main_keyboard(user_id):
@@ -314,8 +372,8 @@ def send_welcome(message):
     )
     text = (
         "<b>Welcome to 24xRaven SMS Bot!</b>\n\n"
-        "<i>All incoming OTPs are automatically forwarded to our group.</i>\n"
-        "Select an option below:"
+        "<i>All incoming live OTPs are automatically fetched and posted to our Telegram Group!</i>\n"
+        "Select an option below to request a number:"
     )
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
 
@@ -332,42 +390,18 @@ def process_country_code(msg):
         bot.reply_to(msg, "Cancelled request.", reply_markup=get_main_keyboard(user_id))
         return
 
-    bot.reply_to(msg, f"⏳ Connecting to iVasms server for country +{code}...")
+    bot.reply_to(msg, f"⏳ Connecting to iVasms live portal for country +{code}...")
 
-    assigned_num = None
-    session = IVASMS_DASHBOARD["session"]
+    # 1. Fetch live number from iVasms
+    assigned_num = fetch_live_ivasms_number(code)
 
-    # 1. Try iVasms Live API / Scraping
-    try:
-        if not IVASMS_DASHBOARD["is_logged_in"]:
-            ivasms_login()
-
-        num_url = f"{IVASMS_DASHBOARD['base_url']}/portal/get_number?country={code}"
-        resp = session.get(num_url, timeout=10)
-        
-        if resp.status_code == 200:
-            try:
-                data = resp.json()
-                if isinstance(data, dict):
-                    assigned_num = data.get("number") or data.get("phone")
-                elif isinstance(data, list) and len(data) > 0:
-                    assigned_num = data[0].get("number") or data[0].get("phone")
-            except Exception:
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                num_elem = soup.find(class_=re.compile(r'number|phone|num'))
-                if num_elem:
-                    assigned_num = num_elem.text.strip()
-
-    except Exception as e:
-        print(f"iVasms Live Fetch Notice: {e}")
-
-    # 2. Local DB Backup Fallback
+    # 2. Local Database Stock Fallback
     if not assigned_num:
         numbers = get_combo(code)
         if numbers:
             assigned_num = numbers[0]
 
-    # 3. Handle No Number Found
+    # 3. Handle No Numbers Available
     if not assigned_num:
         bot.reply_to(
             msg, 
@@ -385,10 +419,10 @@ def process_country_code(msg):
     c_name = country_info[0]
 
     response = (
-        f"<b>{flag} Number Assigned!</b>\n\n"
+        f"<b>{flag} iVasms Live Number Assigned!</b>\n\n"
         f"<b>Country:</b> {c_name} (+{code})\n"
         f"<b>Number:</b> <code>{assigned_num}</code>\n\n"
-        f"<i>All incoming OTP messages for this number will automatically broadcast live in your Telegram group!</i>"
+        f"<i>Send your OTP request now. Generated OTPs will automatically broadcast live in your Telegram group!</i>"
     )
     bot.send_message(msg.chat.id, response, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
 
@@ -450,7 +484,7 @@ def account_status_handler(msg):
     user_id = msg.from_user.id
     user = get_user_info(user_id)
     num = user[5] if user and user[5] else "None"
-    bot.reply_to(msg, f"<b>👤 User Status</b>\n🆔 User ID: <code>{user_id}</code>\n📱 Assigned Number: <code>{num}</code>\n🟢 Live Group Feed: Active", parse_mode="HTML")
+    bot.reply_to(msg, f"<b>👤 User Status</b>\n🆔 User ID: <code>{user_id}</code>\n📱 Assigned Number: <code>{num}</code>\n🟢 Live Group Broadcaster: Active", parse_mode="HTML")
 
 @bot.message_handler(func=lambda msg: True)
 def fallback_handler(msg):
