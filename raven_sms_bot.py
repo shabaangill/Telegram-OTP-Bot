@@ -222,40 +222,42 @@ def release_number(old_number):
 bot = telebot.TeleBot(BOT_TOKEN)
 
 def get_random_number_from_excel(country_code):
-    """Reads numbers from numbers.xlsx by matching country names or numerical prefixes."""
+    """Scans numbers.xlsx for matching country names or dial codes and returns a random selection."""
     excel_path = "numbers.xlsx"
-    if os.path.exists(excel_path):
-        try:
-            df = pd.read_excel(excel_path, skiprows=2, dtype=str)
-            df.iloc[:, 0] = df.iloc[:, 0].fillna("")  # Col A (Range/Country Name)
-            df.iloc[:, 2] = df.iloc[:, 2].fillna("")  # Col C (Numbers)
+    if not os.path.exists(excel_path):
+        print("⚠️ numbers.xlsx not found in directory!")
+        return None
 
-            valid_numbers = []
-            country_name = COUNTRY_CODES.get(str(country_code), ("", ""))[0].upper()
-            
-            for index, row in df.iterrows():
-                col_a_text = str(row.iloc[0]).upper()
-                col_c_text = str(row.iloc[2])
+    try:
+        df = pd.read_excel(excel_path, header=None, dtype=str).fillna("")
+        
+        valid_numbers = []
+        target_code = str(country_code).strip()
+        target_country_name = COUNTRY_CODES.get(target_code, ("", ""))[0].upper()
 
-                num_match = re.search(r'\b\d{8,12}\b', col_c_text)
-                if num_match:
-                    clean_number = num_match.group(0)
+        for idx, row in df.iterrows():
+            row_str = " ".join([str(val).upper() for val in row.values])
 
-                    code_match = str(country_code) in col_a_text or clean_number.startswith(str(country_code))
-                    name_match = country_name and country_name in col_a_text
+            num_matches = re.findall(r'\b\d{8,12}\b', row_str)
+            if not num_matches:
+                continue
 
-                    if country_code == "225" and ("IVORY" in col_a_text or "COTE" in col_a_text):
-                        name_match = True
+            for clean_number in num_matches:
+                name_matched = target_country_name and target_country_name in row_str
+                code_matched = clean_number.startswith(target_code)
 
-                    if code_match or name_match:
-                        valid_numbers.append(clean_number)
+                if target_code == "225" and ("IVORY" in row_str or "COTE" in row_str):
+                    name_matched = True
 
-            if valid_numbers:
-                return random.choice(valid_numbers)
+                if name_matched or code_matched:
+                    valid_numbers.append(clean_number)
 
-        except Exception as e:
-            print(f"Error reading numbers.xlsx: {e}")
-            
+        if valid_numbers:
+            return random.choice(valid_numbers)
+
+    except Exception as e:
+        print(f"❌ Error reading numbers.xlsx: {e}")
+
     return None
 
 def ivasms_login():
