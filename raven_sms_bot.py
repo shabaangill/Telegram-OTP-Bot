@@ -13,16 +13,20 @@ import requests
 import json
 import re
 import os
+import random
 from datetime import datetime
 import sqlite3
 import telebot
 from telebot import types
 import threading
 from bs4 import BeautifulSoup
+import pandas as pd
 
 # ------------------------------------------------------------------
 # CONFIGURATION & ENVIRONMENT VARIABLES
 # ------------------------------------------------------------------
+
+OTP_GROUP_LINK = os.getenv("OTP_GROUP_LINK", "https://t.me/your_otp_group_link")
 
 IVASMS_DASHBOARD = {
     "name": "iVasms",
@@ -44,7 +48,7 @@ IVASMS_DASHBOARD["session"].headers.update({
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8991152186:AAHpCTzjoRnG-Gh0jFEHGyrfzaRhSqDlRw4")
 
-raw_chat_ids = os.getenv("CHAT_IDS", "6834606293")
+raw_chat_ids = os.getenv("CHAT_IDS", "-100XXXXXXXXXX")
 CHAT_IDS = [cid.strip() for cid in raw_chat_ids.split(",") if cid.strip()]
 
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", 5)) 
@@ -58,10 +62,12 @@ if not BOT_TOKEN:
 # COUNTRY CODES DICTIONARY
 # ------------------------------------------------------------------
 COUNTRY_CODES = {
+    "93": ("Afghanistan", "🇦🇫"),
+    "966": ("Saudi Arabia", "🇸🇦"),
+    "243": ("Congo", "🇨🇩"),
+    "92": ("Pakistan", "🇵🇰"),
     "1": ("USA/Canada", "🇺🇸"),
     "44": ("United Kingdom", "🇬🇧"),
-    "92": ("Pakistan", "🇵🇰"),
-    "93": ("Afghanistan", "🇦🇫"),
     "91": ("India", "🇮🇳"),
 }
 
@@ -198,10 +204,39 @@ def release_number(old_number):
     conn.close()
 
 # ------------------------------------------------------------------
-# SESSION AUTHENTICATION & SCRAPER ENGINE
+# EXCEL READER & SCRAPER ENGINE
 # ------------------------------------------------------------------
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
+def get_random_number_from_excel(country_code):
+    """Reads numbers directly from numbers.xlsx and returns a random matching number."""
+    excel_path = "numbers.xlsx"
+    if os.path.exists(excel_path):
+        try:
+            df = pd.read_excel(excel_path, skiprows=2, dtype=str)
+            df.iloc[:, 0] = df.iloc[:, 0].fillna("")
+            df.iloc[:, 2] = df.iloc[:, 2].fillna("")
+
+            valid_numbers = []
+            
+            for index, row in df.iterrows():
+                col_a_text = str(row.iloc[0]).upper()
+                col_c_text = str(row.iloc[2])
+
+                num_match = re.search(r'\b\d{8,12}\b', col_c_text)
+                if num_match:
+                    clean_number = num_match.group(0)
+                    if str(country_code) in col_a_text or clean_number.startswith(str(country_code)):
+                        valid_numbers.append(clean_number)
+
+            if valid_numbers:
+                return random.choice(valid_numbers)
+
+        except Exception as e:
+            print(f"Error reading numbers.xlsx: {e}")
+            
+    return None
 
 def ivasms_login():
     """Logs into ivasms.com and holds active user session."""
@@ -238,7 +273,6 @@ def fetch_live_ivasms_number(country_code):
     if not IVASMS_DASHBOARD["is_logged_in"]:
         ivasms_login()
 
-    # 1. Try DataTables AJAX Endpoints
     ajax_urls = [
         f"{IVASMS_DASHBOARD['base_url']}/portal/numbers/get_data",
         f"{IVASMS_DASHBOARD['base_url']}/portal/numbers/list",
@@ -269,22 +303,6 @@ def fetch_live_ivasms_number(country_code):
                         return full_num
         except Exception as e:
             print(f"DataTables fetch error for {url}: {e}")
-
-    # 2. Scrape Page Source & Table DOM Elements
-    for page_url in [IVASMS_DASHBOARD["my_numbers_url"], f"{IVASMS_DASHBOARD['base_url']}/portal/numbers"]:
-        try:
-            resp = session.get(page_url, timeout=10)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'html.parser')
-                for td in soup.find_all(['td', 'span', 'div']):
-                    text = td.get_text(strip=True)
-                    if re.match(rf'^(?:\+{country_code}|00{country_code}|{country_code})?\d{{7,11}}$', text):
-                        clean_num = re.sub(r'\D', '', text)
-                        if not clean_num.startswith(country_code):
-                            clean_num = f"{country_code}{clean_num}"
-                        return clean_num
-        except Exception as e:
-            print(f"Page scrape error for {page_url}: {e}")
 
     return None
 
@@ -347,7 +365,7 @@ polling_thread = threading.Thread(target=auto_poll_ivasms, daemon=True)
 polling_thread.start()
 
 # ------------------------------------------------------------------
-# TELEGRAM BOT HANDLERS
+# TELEGRAM BOT HANDLERS & INLINE KEYBOARDS
 # ------------------------------------------------------------------
 
 def get_main_keyboard(user_id):
@@ -361,6 +379,16 @@ def get_main_keyboard(user_id):
         markup.add(types.KeyboardButton("⚙️ Admin Panel"))
     return markup
 
+def get_country_selection_keyboard():
+    """Generates an inline grid of country selection buttons directly in chat screen."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for code, (name, flag) in COUNTRY_CODES.items():
+        btn_text = f"{flag} {name} (+{code})"
+        buttons.append(types.InlineKeyboardButton(btn_text, callback_data=f"getnum_{code}"))
+    markup.add(*buttons)
+    return markup
+
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     user_id = message.from_user.id
@@ -368,73 +396,58 @@ def send_welcome(message):
     text = (
         "<b>Welcome to 24xRaven SMS Bot!</b>\n\n"
         "<i>All incoming OTPs generated on ivasms.com post live to our Telegram group automatically!</i>\n\n"
-        "Tap <b>📱 Get Number</b> below and type <code>93</code> to grab an active Afghanistan number."
+        "Tap <b>📱 Get Number</b> below to choose a country and get a random active number."
     )
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
 
 @bot.message_handler(func=lambda msg: msg.text == "📱 Get Number")
 def get_number_handler(msg):
-    sent_msg = bot.reply_to(msg, "Send country code (e.g. 93 for Afghanistan, 92 for PK, 44 for UK):")
-    bot.register_next_step_handler(sent_msg, process_country_code)
+    text = "<b>🌍 Select a Country to Get a Random Number:</b>"
+    bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=get_country_selection_keyboard())
 
-def process_country_code(msg):
-    user_id = msg.from_user.id
-    code = msg.text.strip()
-    
-    if code.startswith("/") or code in ["📱 Get Number", "📥 Check OTP", "🧹 Clear Session", "📊 Account Status"]:
-        bot.reply_to(msg, "Cancelled request.", reply_markup=get_main_keyboard(user_id))
-        return
+@bot.callback_query_handler(func=lambda call: call.data.startswith("getnum_"))
+def process_country_callback(call):
+    user_id = call.from_user.id
+    code = call.data.split("_")[1]
 
-    bot.reply_to(msg, f"⏳ Connecting to ivasms.com for country +{code}...")
+    bot.answer_callback_query(call.id, text="Selecting random number...")
 
-    # 1. Scrape live number from ivasms.com
-    assigned_num = fetch_live_ivasms_number(code)
+    # 1. Fetch random number from numbers.xlsx
+    assigned_num = get_random_number_from_excel(code)
 
-    # 2. Database Stock Fallback
+    # 2. Scrape live number from ivasms.com if not in excel
+    if not assigned_num:
+        assigned_num = fetch_live_ivasms_number(code)
+
+    # 3. Local DB Fallback
     if not assigned_num:
         numbers = get_combo(code)
         if numbers:
-            assigned_num = numbers[0]
+            assigned_num = random.choice(numbers)
 
     if not assigned_num:
-        bot.reply_to(
-            msg, 
-            f"❌ No live numbers found for country code <code>+{code}</code> on ivasms.com.\n\n"
-            f"<i>Admin can add backup stock anytime using:</i>\n<code>/addcombo {code} number1,number2</code>", 
-            parse_mode="HTML", 
-            reply_markup=get_main_keyboard(user_id)
+        bot.send_message(
+            call.message.chat.id, 
+            f"❌ No numbers found for country code <code>+{code}</code> right now.\n\n"
+            f"<i>Please try another country or add stock to numbers.xlsx.</i>", 
+            parse_mode="HTML"
         )
         return
 
     assign_number_to_user(user_id, assigned_num)
     country_info = COUNTRY_CODES.get(code, ("Unknown", "🌐"))
 
+    redirect_markup = types.InlineKeyboardMarkup()
+    redirect_btn = types.InlineKeyboardButton("📢 View Live OTP Group", url=OTP_GROUP_LINK)
+    redirect_markup.add(redirect_btn)
+
     response = (
-        f"<b>{country_info[1]} Number Assigned!</b>\n\n"
+        f"<b>{country_info[1]} Random Number Assigned!</b>\n\n"
         f"<b>Country:</b> {country_info[0]} (+{code})\n"
         f"<b>Number:</b> <code>{assigned_num}</code>\n\n"
-        f"<i>Trigger your OTP now. All incoming messages for this number will automatically broadcast live in your Telegram group!</i>"
+        f"<i>Trigger your OTP now. Click the button below to view the incoming OTP live in our group!</i>"
     )
-    bot.send_message(msg.chat.id, response, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
-
-@bot.message_handler(commands=['addcombo'])
-def add_combo_handler(msg):
-    if msg.from_user.id not in ADMIN_IDS:
-        bot.reply_to(msg, "❌ Unauthorized.")
-        return
-    try:
-        parts = msg.text.split(" ", 2)
-        if len(parts) < 3:
-            bot.reply_to(msg, "Usage: /addcombo country_code num1,num2")
-            return
-            
-        code = parts[1].strip()
-        num_list = [n.strip() for n in parts[2].split(",") if n.strip()]
-        
-        save_combo(code, num_list)
-        bot.reply_to(msg, f"✅ Added {len(num_list)} numbers for country code +{code}!")
-    except Exception as e:
-        bot.reply_to(msg, f"❌ Error adding combo: {e}")
+    bot.send_message(call.message.chat.id, response, parse_mode="HTML", reply_markup=redirect_markup)
 
 @bot.message_handler(func=lambda msg: msg.text == "📥 Check OTP")
 def check_otp_handler(msg):
@@ -445,22 +458,16 @@ def check_otp_handler(msg):
         return
     
     assigned_num = user[5]
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT otp, full_message, timestamp FROM otp_logs WHERE number=? ORDER BY id DESC LIMIT 5", (assigned_num,))
-    logs = c.fetchall()
-    conn.close()
 
-    if not logs:
-        bot.reply_to(msg, f"⏳ No SMS received yet for <code>{assigned_num}</code>.", parse_mode="HTML")
-        return
+    redirect_markup = types.InlineKeyboardMarkup()
+    redirect_btn = types.InlineKeyboardButton("🚀 Go to OTP Info Group", url=OTP_GROUP_LINK)
+    redirect_markup.add(redirect_btn)
 
-    text = f"<b>📥 Latest SMS Logs for <code>{assigned_num}</code>:</b>\n\n"
-    for log in logs:
-        otp, full_msg, tstamp = log
-        text += f"🔑 <b>OTP:</b> <code>{otp}</code>\n💬 <b>MSG:</b> {full_msg}\n🕒 <i>{tstamp}</i>\n-------------------\n"
-    
-    bot.send_message(msg.chat.id, text, parse_mode="HTML")
+    text = (
+        f"<b>📱 Assigned Number:</b> <code>{assigned_num}</code>\n\n"
+        f"<i>All incoming OTP codes for this number are automatically streamed directly to our official group! Click below to view:</i>"
+    )
+    bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=redirect_markup)
 
 @bot.message_handler(func=lambda msg: msg.text == "🧹 Clear Session")
 def clear_session_handler(msg):
