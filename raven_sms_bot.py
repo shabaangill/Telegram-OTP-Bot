@@ -59,16 +59,28 @@ if not BOT_TOKEN:
     raise SystemExit("❌ BOT_TOKEN environment variable is missing!")
 
 # ------------------------------------------------------------------
-# COUNTRY CODES DICTIONARY
+# PLATFORMS & COUNTRY CODES DICTIONARIES
 # ------------------------------------------------------------------
+
+PLATFORMS = {
+    "wa": ("WhatsApp", "💬"),
+    "tg": ("Telegram", "✈️"),
+    "tt": ("TikTok", "🎵"),
+    "fb": ("Facebook", "📘"),
+    "ig": ("Instagram", "📸"),
+    "go": ("Google / Gmail", "📧"),
+    "nf": ("Netflix", "🎬"),
+    "ai": ("OpenAI / ChatGPT", "🤖")
+}
+
 COUNTRY_CODES = {
     "93": ("Afghanistan", "🇦🇫"),
     "966": ("Saudi Arabia", "🇸🇦"),
+    "225": ("Ivory Coast", "🇨🇮"),
     "243": ("Congo", "🇨🇩"),
     "92": ("Pakistan", "🇵🇰"),
     "1": ("USA/Canada", "🇺🇸"),
     "44": ("United Kingdom", "🇬🇧"),
-    "91": ("India", "🇮🇳"),
 }
 
 # ------------------------------------------------------------------
@@ -210,15 +222,16 @@ def release_number(old_number):
 bot = telebot.TeleBot(BOT_TOKEN)
 
 def get_random_number_from_excel(country_code):
-    """Reads numbers directly from numbers.xlsx and returns a random matching number."""
+    """Reads numbers from numbers.xlsx by matching country names or numerical prefixes."""
     excel_path = "numbers.xlsx"
     if os.path.exists(excel_path):
         try:
             df = pd.read_excel(excel_path, skiprows=2, dtype=str)
-            df.iloc[:, 0] = df.iloc[:, 0].fillna("")
-            df.iloc[:, 2] = df.iloc[:, 2].fillna("")
+            df.iloc[:, 0] = df.iloc[:, 0].fillna("")  # Col A (Range/Country Name)
+            df.iloc[:, 2] = df.iloc[:, 2].fillna("")  # Col C (Numbers)
 
             valid_numbers = []
+            country_name = COUNTRY_CODES.get(str(country_code), ("", ""))[0].upper()
             
             for index, row in df.iterrows():
                 col_a_text = str(row.iloc[0]).upper()
@@ -227,7 +240,14 @@ def get_random_number_from_excel(country_code):
                 num_match = re.search(r'\b\d{8,12}\b', col_c_text)
                 if num_match:
                     clean_number = num_match.group(0)
-                    if str(country_code) in col_a_text or clean_number.startswith(str(country_code)):
+
+                    code_match = str(country_code) in col_a_text or clean_number.startswith(str(country_code))
+                    name_match = country_name and country_name in col_a_text
+
+                    if country_code == "225" and ("IVORY" in col_a_text or "COTE" in col_a_text):
+                        name_match = True
+
+                    if code_match or name_match:
                         valid_numbers.append(clean_number)
 
             if valid_numbers:
@@ -379,13 +399,23 @@ def get_main_keyboard(user_id):
         markup.add(types.KeyboardButton("⚙️ Admin Panel"))
     return markup
 
-def get_country_selection_keyboard():
-    """Generates an inline grid of country selection buttons directly in chat screen."""
+def get_platform_selection_keyboard():
+    """Generates an inline grid of social media platforms."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for code, (name, icon) in PLATFORMS.items():
+        btn_text = f"{icon} {name}"
+        buttons.append(types.InlineKeyboardButton(btn_text, callback_data=f"platform_{code}"))
+    markup.add(*buttons)
+    return markup
+
+def get_country_selection_keyboard(platform_code):
+    """Generates an inline grid of countries after platform is chosen."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     buttons = []
     for code, (name, flag) in COUNTRY_CODES.items():
         btn_text = f"{flag} {name} (+{code})"
-        buttons.append(types.InlineKeyboardButton(btn_text, callback_data=f"getnum_{code}"))
+        buttons.append(types.InlineKeyboardButton(btn_text, callback_data=f"getnum_{platform_code}_{code}"))
     markup.add(*buttons)
     return markup
 
@@ -396,21 +426,39 @@ def send_welcome(message):
     text = (
         "<b>Welcome to 24xRaven SMS Bot!</b>\n\n"
         "<i>All incoming OTPs generated on ivasms.com post live to our Telegram group automatically!</i>\n\n"
-        "Tap <b>📱 Get Number</b> below to choose a country and get a random active number."
+        "Tap <b>📱 Get Number</b> below to pick a service and get an active number."
     )
     bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_main_keyboard(user_id))
 
 @bot.message_handler(func=lambda msg: msg.text == "📱 Get Number")
 def get_number_handler(msg):
-    text = "<b>🌍 Select a Country to Get a Random Number:</b>"
-    bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=get_country_selection_keyboard())
+    text = "<b>📱 Select a Social Media Platform:</b>"
+    bot.send_message(msg.chat.id, text, parse_mode="HTML", reply_markup=get_platform_selection_keyboard())
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("platform_"))
+def process_platform_callback(call):
+    platform_code = call.data.split("_")[1]
+    platform_info = PLATFORMS.get(platform_code, ("Selected Service", "🌐"))
+    
+    bot.answer_callback_query(call.id, text=f"Selected {platform_info[0]}")
+    
+    text = f"<b>{platform_info[1]} Service: {platform_info[0]}</b>\n\n<b>🌍 Now select a country:</b>"
+    bot.edit_message_text(
+        text, 
+        chat_id=call.message.chat.id, 
+        message_id=call.message.message_id, 
+        parse_mode="HTML", 
+        reply_markup=get_country_selection_keyboard(platform_code)
+    )
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("getnum_"))
 def process_country_callback(call):
+    parts = call.data.split("_")
+    platform_code = parts[1]
+    code = parts[2]
     user_id = call.from_user.id
-    code = call.data.split("_")[1]
 
-    bot.answer_callback_query(call.id, text="Selecting random number...")
+    bot.answer_callback_query(call.id, text="Fetching random number from numbers.xlsx...")
 
     # 1. Fetch random number from numbers.xlsx
     assigned_num = get_random_number_from_excel(code)
@@ -429,23 +477,25 @@ def process_country_callback(call):
         bot.send_message(
             call.message.chat.id, 
             f"❌ No numbers found for country code <code>+{code}</code> right now.\n\n"
-            f"<i>Please try another country or add stock to numbers.xlsx.</i>", 
+            f"<i>Please try another country or verify stock in numbers.xlsx.</i>", 
             parse_mode="HTML"
         )
         return
 
     assign_number_to_user(user_id, assigned_num)
     country_info = COUNTRY_CODES.get(code, ("Unknown", "🌐"))
+    platform_info = PLATFORMS.get(platform_code, ("Selected Service", "📱"))
 
     redirect_markup = types.InlineKeyboardMarkup()
     redirect_btn = types.InlineKeyboardButton("📢 View Live OTP Group", url=OTP_GROUP_LINK)
     redirect_markup.add(redirect_btn)
 
     response = (
-        f"<b>{country_info[1]} Random Number Assigned!</b>\n\n"
+        f"<b>{country_info[1]} Number Assigned!</b>\n\n"
+        f"<b>Service:</b> {platform_info[1]} {platform_info[0]}\n"
         f"<b>Country:</b> {country_info[0]} (+{code})\n"
         f"<b>Number:</b> <code>{assigned_num}</code>\n\n"
-        f"<i>Trigger your OTP now. Click the button below to view the incoming OTP live in our group!</i>"
+        f"<i>Trigger your OTP now. Click below to view the incoming code in our live group!</i>"
     )
     bot.send_message(call.message.chat.id, response, parse_mode="HTML", reply_markup=redirect_markup)
 
