@@ -41,8 +41,8 @@ IVASMS_DASHBOARD = {
     "login_url": "https://ivas.tempnum.qzz.io/login",
     "base_url": "https://ivas.tempnum.qzz.io",
     "sms_api_endpoint": "https://ivas.tempnum.qzz.io/portal/sms/received/getsms",
-    "username": "YOUR_EMAIL_HERE",
-    "password": "YOUR_PASSWORD_HERE",
+    "username": "shabaangill0001@gmail.com",
+    "password": "Shabaan6894",
     "session": requests.Session(),
     "is_logged_in": False,
     "cookies": None,
@@ -52,7 +52,7 @@ IVASMS_DASHBOARD = {
 
 # ✘ 𝙍𝘼𝙑𝙀𝙉 | إعدادات عامة
 USERNAME = "shabaangill0001@gmail.com"
-PASSWORD = "Shabaan@6894"
+PASSWORD = "Shabaan6894"
 BOT_TOKEN = "8991152186:AAHpCTzjoRnG-Gh0jFEHGyrfzaRhSqDlRw4"
 CHAT_IDS = [
     "6834606293",
@@ -74,11 +74,11 @@ FORCE_SUB_CHANNEL = None
 FORCE_SUB_ENABLED = False
 BOT_ACTIVE = True 
 
-if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+if not BOT_TOKEN or BOT_TOKEN == "8991152186:AAHpCTzjoRnG-Gh0jFEHGyrfzaRhSqDlRw4":
     raise SystemExit("❌ BOT_TOKEN must be set")
-if not CHAT_IDS or CHAT_IDS[0] == "YOUR_CHAT_ID_HERE":
+if not CHAT_IDS or CHAT_IDS[0] == "6834606293":
     raise SystemExit("❌ CHAT_IDS must be configured")
-if not USERNAME or USERNAME == "shabaangill0001@gmail.com" or not PASSWORD or PASSWORD == "Shabaan@6894":
+if not USERNAME or USERNAME == "shabaangill0001@gmail.com" or not PASSWORD or PASSWORD == "Shabaan6894":
     print("⚠️  WARNING: SITE_USERNAME and SITE_PASSWORD not set")
     print("⚠️  Bot will continue but login may fail")
 
